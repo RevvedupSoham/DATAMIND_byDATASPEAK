@@ -2,427 +2,444 @@
 
 **Ask your database in plain English.**
 
-DataMind turns a natural-language question about an workforce database into a
-real PostgreSQL query, runs it against your actual Supabase database, and
-shows you the SQL, the data, and — when it makes sense — a chart. There is no
-mock data anywhere in the pipeline: the database is the single source of
-truth, and the LLM's only job is translating English into SQL.
+DataMind turns natural-language questions into PostgreSQL queries, validates them independently, executes them against a real Supabase PostgreSQL database, and presents the returned data with SQL and supported visualizations.
 
-DataMind sits behind a login. There are two account roles:
+The database is the source of truth. The LLM translates the question into SQL; it does not invent database results.
 
-- **Employee** — read-only. Can ask anything about the data; every generated
-  statement is guaranteed to be a `SELECT`/`WITH` query.
-- **HR/Manager** — read and write. Can additionally ask DataMind to create,
-  update, or delete data (or even schema), but nothing runs automatically —
-  every write is shown for review and only executes after the hr_manager clicks
-  **Confirm & Run**.
+## What DataMind provides
 
-## Problem & solution
+- Natural-language database querying
+- Role-aware SQL generation
+- Independent server-side SQL validation
+- Real-time execution against Supabase PostgreSQL
+- Explicit confirmation before privileged writes
+- Automatic bar, line, and pie visualization when the returned data supports it
+- SQL inspection and result-table views
+- Role-based CSV export for HR/Manager users
+- Owner workspace for account management, database inspection, and audit activity
+- Signed server-side sessions with inactivity expiry
+- Audit logging for important database and account operations
 
-Non-technical stakeholders can't write SQL, and engineers don't want to be a
-human query API. DataMind closes that gap:
+## Roles and authorization
+
+DataMind currently has three application roles:
+
+| Role | Database access | Write access | Owner workspace | CSV export |
+|---|---|---|---|---|
+| **Owner** | Read + privileged operations | Yes | Yes | Yes |
+| **HR/Manager** | Read + approved writes | Yes | No | Yes |
+| **Employee** | Read-only | No | No | No |
+
+Authorization is derived from the verified server-side session. The client cannot choose a role to obtain additional privileges.
+
+### Authorization flow
 
 ```
-Login (employee or hr_manager)
-   → Natural language question
-   → LLM (Groq · openai/gpt-oss-120b) — role-aware prompt
-   → PostgreSQL statement
-   → independent server-side safety validation (role-aware)
-   → read: execute immediately via read-only RPC
-   → write (hr_manager only): held for explicit confirmation, then executed
-      via a separate, more tightly scoped RPC
-   → real rows
-   → SQL viewer + dynamic result table
-   → automatic visualization, only when the data supports it
+Login
+  ↓
+Role-specific credential verification
+  ↓
+Signed session cookie
+  ↓
+Server verifies session + role
+  ↓
+Role-aware SQL generation
+  ↓
+Independent SQL validation
+  ↓
+Read → execute immediately
+Write → show SQL → explicit confirmation
+  ↓
+Supabase PostgreSQL
+  ↓
+Real rows → table / supported chart
 ```
 
-The LLM never sees or returns data — it only ever produces a SQL string. All
-filtering, joining, counting, ranking, and aggregation happens in Postgres.
+For owner operations, the flow is additionally protected by an owner-only route check and server-side role verification.
 
-## Architecture
+## Core architecture
 
 ```
 app/
-  layout.tsx                Root layout, fonts, metadata
-  page.tsx                   Landing page composition (behind login)
-  login/page.tsx              Login screen: HR/Manager / Employee tabs
-  globals.css                  Tailwind base + design tokens
+  layout.tsx
+  page.tsx
+  login/page.tsx
+  owner/page.tsx
+
   api/
-    query/route.ts             Generates + validates SQL. Executes reads
-                                immediately; returns writes as "pending
-                                confirmation" instead of running them.
-    query/confirm/route.ts      The ONLY route that executes a write. Re-
-                                validates the statement and requires an
-                                hr_manager session.
-    auth/login/route.ts          Verifies credentials, issues a signed
-                                session cookie carrying the account's role
-    auth/logout/route.ts         Clears the session cookie
-    auth/me/route.ts             Returns the current session (or 401)
-    health/route.ts              Supabase connectivity check
+    auth/
+      login/route.ts
+      logout/route.ts
+      me/route.ts
+      heartbeat/route.ts
+    query/route.ts
+    query/confirm/route.ts
+    owner/route.ts
+    health/route.ts
 
 components/
-  Navigation.tsx           Overlay nav + a round avatar button that opens a
-                           dropdown with the signed-in user's name, role,
-                           and a sign-out button (UserMenu, in this file)
-  Hero.tsx                 Hero section
-  HowItWorks.tsx           4-step explainer
-  QueryInterface.tsx       The core product: input, status, confirmation
-                           step for writes, results
-  SuggestedQuestions.tsx   Quick-start question chips
-  SQLViewer.tsx            Generated SQL + copy button
-  ResultView.tsx           Table/Bar/Line/Pie tab switcher + hr_manager-only
-                           "Download CSV" button, wrapping ResultTable and
-                           ChartRenderer
-  ResultTable.tsx          Dynamic, type-aware result table
-  ChartRenderer.tsx        Recharts bar/line/pie renderer (renders whichever
-                           single chart ResultView has selected)
-  Examples.tsx             Required example questions
-  VisualizationSection.tsx  "From answers to insight" + FinalCta + Footer
+  Navigation.tsx
+  Hero.tsx
+  HowItWorks.tsx
+  QueryInterface.tsx
+  SuggestedQuestions.tsx
+  SQLViewer.tsx
+  ResultView.tsx
+  ResultTable.tsx
+  ChartRenderer.tsx
+  Examples.tsx
+  VisualizationSection.tsx
+  SessionGuard.tsx
+  ThemeToggle.tsx
 
 lib/
-  csv.ts                   Converts a QueryResult to CSV text and triggers
-                           a browser download — purely client-side, so it
-                           can never export more than the user's own
-                           session already returned to them
-  ask-bridge.ts            Tiny window-event bridge so Examples/
-                           VisualizationSection can trigger a question in
-                           QueryInterface without prop drilling
-  auth/session.ts          Signs/verifies session cookies with Web Crypto
-                           (works in both the Node API routes and the Edge
-                           middleware runtime)
-  llm/groq.ts              Groq client (server-only) — role-aware prompt
-  sql/schema.ts            VERIFIED_SCHEMA + both LLM system prompts
-                           (read-only for employees, write-enabled for hr_managers)
-  sql/validator.ts         Independent, role-aware SQL safety validator
-                           (the real security boundary)
-  database/supabase.ts     Supabase service-role client, read-only RPC call,
-                           privileged (write) RPC call, and credential
-                           verification
-  visualization/engine.ts  Decides chart type from the *actual* returned rows
+  auth/session.ts
+  database/supabase.ts
+  llm/groq.ts
+  sql/schema.ts
+  sql/validator.ts
+  visualization/engine.ts
+  csv.ts
+  ask-bridge.ts
 
 types/
-  auth.ts        Session/role types
-  database.ts    Row types + DatabaseSchema shape
-  query.ts       Query/response/status types, including the pending-
-                 confirmation shape for hr_manager writes
-  visualization.ts  ChartType + VisualizationConfig
-  css.d.ts        Ambient module declaration so plain CSS imports type-check
-                 under standalone `tsc` (next build already handles this)
+  auth.ts
+  database.ts
+  query.ts
+  visualization.ts
 
-middleware.ts     Redirects any unauthenticated request to /login (JSON 401
-                 for /api/* instead of a redirect)
-
-setup.sql          One-time Supabase SQL: execute_readonly_sql RPC
-auth_setup.sql      One-time Supabase SQL: separate hr_manager_users/employee_users
-                   tables, verify_hr_manager_login/verify_employee_login RPCs,
-                   execute_privileged_sql RPC (run after setup.sql)
+middleware.ts
+setup.sql
+auth_setup.sql
+managing-accounts.md
 ```
 
 ## Natural language → SQL
 
-`lib/sql/schema.ts` builds the system prompt sent to `openai/gpt-oss-120b`
-via Groq. It contains the verified schema (`workforce`, `department`,
-`salary`, `address`, `job_history`, `dept_assignment`) and their foreign
-keys. There are two prompt variants:
+The LLM is accessed through Groq using the configured `GROQ_MODEL`, currently intended for `openai/gpt-oss-120b`.
 
-- **Employee (read-only)** instructs the model to return exactly one
-  `SELECT`/`WITH`/`WITH RECURSIVE` statement, and to explicitly refuse (by
-  returning a zero-row `SELECT`) anything that would modify data.
-- **HR/Manager (write-enabled)** additionally allows `INSERT`/`UPDATE`/`DELETE`/
-  `CREATE`/`DROP`/`ALTER`/`TRUNCATE` when the request clearly asks for one,
-  but still forbids `GRANT`/`REVOKE`/`MERGE`/`CALL`/`EXECUTE` and other
-  privilege-escalation or server-hr_manager operations unconditionally.
+The verified database schema is supplied by `lib/sql/schema.ts`. The application uses role-aware prompting so that the generated SQL reflects the authenticated user's permissions.
 
-Both variants:
+The model is instructed to return structured JSON containing:
 
-- respond as JSON: `{"sql": "...", "explanation": "..."}`
-- never emit multiple statements
-- use a recursive CTE for arbitrary-depth manager hierarchies
-- ignore any instruction embedded in the user's question (prompt injection)
+```json
+{
+  "sql": "...",
+  "explanation": "..."
+}
+```
 
-The prompt is a **behavioral** guardrail only. It is never trusted as the
-security boundary — the account's actual role, read from the verified
-session cookie, decides which prompt variant is even used, and the
-validator below re-checks everything regardless of what the model returned.
+The generated SQL is not trusted. It passes through the independent application validator before execution.
 
-## SQL validation (the real security boundary)
+## SQL validation
 
-`lib/sql/validator.ts`'s `validateSql(sql, { allowWrites })` independently
-re-parses the SQL the model returned. `allowWrites` is passed in by the API
-route from the verified session role — never from anything in the request
-body.
+`lib/sql/validator.ts` is the application's primary SQL safety boundary.
 
-For every request, regardless of role:
+Validation includes:
 
-- strips comments (so a forbidden keyword can't hide inside one)
-- rejects multiple statements (stray `;` outside string literals)
-- rejects a handful of dangerous Postgres functions (`pg_read_file`,
-  `dblink_exec`, `pg_terminate_backend`, ...)
-- enforces a max length
-- unconditionally forbids `GRANT`, `REVOKE`, `MERGE`, `CALL`, `EXECUTE`,
-  `VACUUM`, `COPY`, `LISTEN`, `NOTIFY`, `SET`, `COMMENT` — there is no role
-  that unlocks these
+- statement-type checks
+- maximum query length
+- multiple-statement detection
+- dangerous PostgreSQL function detection
+- forbidden administrative/privilege operations
+- role-aware write restrictions
+- protection against unrestricted `UPDATE`/`DELETE`
+- restrictions on DataMind system tables for non-owner roles
+- additional checks for SQL comments and suspicious control sequences
 
-For a **employee** (`allowWrites: false`), the statement must additionally
-start with `SELECT` or `WITH`, and the full read-only forbidden-keyword list
-(`INSERT`/`UPDATE`/`DELETE`/`DROP`/`ALTER`/`TRUNCATE`/`CREATE`/...) applies.
+The authenticated role is taken from the verified session, not from the request body.
 
-For an **hr_manager** (`allowWrites: true`), `INSERT`/`UPDATE`/`DELETE`/`CREATE`/
-`DROP`/`ALTER`/`TRUNCATE` are permitted as a leading statement type, but an
-`UPDATE`/`DELETE` with no `WHERE` clause is rejected outright (it would
-affect every row in a table) — the request has to specify which row(s) it
-means, or say explicitly that it wants to affect everything.
+### Read requests
 
-## Read-only & privileged database execution (defense in depth)
+Employee, HR/Manager, and Owner read requests are validated before being sent to the read-only database RPC.
 
-`setup.sql` creates `execute_readonly_sql(query text)` — re-checks
-`SELECT`/`WITH`, rejects multiple statements, runs with an 8s
-`statement_timeout`, and is granted only to `service_role`.
+### Write requests
 
-`auth_setup.sql` additionally creates `execute_privileged_sql(query text)`
-for hr_manager writes. It independently re-blocks the same
-privilege-escalation/server-hr_manager keyword list and the same dangerous
-function list, accepts `SELECT`/`WITH`/`INSERT`/`UPDATE`/`DELETE`/`CREATE`/
-`DROP`/`ALTER`/`TRUNCATE`, still rejects multiple statements, and is granted
-only to `service_role`. **The application only ever calls this function
-after independently verifying, from the signed session cookie, that the
-caller is an hr_manager** — the function itself has no way to check that, so
-treat it as "powerful and trusted-caller-only."
+HR/Manager and Owner write requests do not execute immediately from the initial query route.
 
-The app calls these via `client.rpc(...)` using the service-role key, which
-never leaves the server. This is a second, independent enforcement layer
-beyond the app-level validator: DataMind never relies on a single layer to
-keep unauthorized writes out.
+The generated SQL is returned as a pending operation. The user reviews it and explicitly chooses **Confirm & Run**. The confirmation route validates the SQL again and only then calls the privileged database RPC.
 
-## Authentication & roles
+## Database-level defense in depth
 
-- `auth_setup.sql` creates **two separate tables** — `hr_manager_users` and
-  `employee_users` — with no shared table and no role column to compare. Each
-  has its own `username` and `pgcrypto`-hashed `password_hash`. The HR/Manager
-  panel's login check has no code path that can ever read `employee_users`,
-  and the Employee panel's check has no code path that can ever read
-  `hr_manager_users` — it isn't just filtered out after a lookup, the other
-  table is never queried at all. Two demo accounts are seeded, one per
-  table — **change both demo passwords** before using this beyond a local
-  demo.
-- `verify_hr_manager_login(username, password)` and `verify_employee_login(username,
-  password)` are two separate Postgres functions, each checking the
-  password DB-side (via `crypt()`) against only its own table, and
-  returning `true`/`false`. Which one runs is decided entirely by which
-  panel tab the login screen posts — `lib/database/supabase.ts` picks the
-  RPC by that panel name.
-- On success, the server issues a signed, `httpOnly` session cookie
-  (`lib/auth/session.ts`) containing `{username, role, iat, exp}` with an
-  HMAC-SHA256 signature keyed by `SESSION_SECRET`. It's built on the Web
-  Crypto API specifically so the same code verifies sessions in both the
-  Node.js API routes and the Edge middleware runtime.
-- `middleware.ts` redirects any unauthenticated request to `/login` (and
-  returns a JSON 401 for `/api/*` instead of a redirect, since a `fetch()`
-  following a 302 to an HTML page isn't useful to the caller).
-- Every privileged decision (`allowWrites`, which RPC to call) is re-derived
-  from the verified cookie inside the route handler itself — never trusted
-  from middleware alone, and never accepted as a parameter from the client.
+DataMind does not rely solely on application code.
+
+### `setup.sql`
+
+Creates:
+
+`execute_readonly_sql(query text)`
+
+This function:
+
+- accepts only `SELECT`/ `WITH` statements
+- rejects multiple statements
+- applies an 8-second statement timeout
+- is callable only by `service_role`
+
+### `auth_setup.sql`
+
+Creates the authentication/account tables:
+
+- `owner_users`
+- `hr_manager_users`
+- `employee_users`
+- `audit_logs`
+
+It also creates:
+
+- `hash_datamind_password()`
+- `verify_owner_login()`
+- `verify_hr_manager_login()`
+- `verify_employee_login()`
+- `execute_privileged_sql()`
+
+Account tables and management functions are restricted from browser roles.
+
+The privileged SQL RPC applies its own statement-type and dangerous-operation checks and is granted only to `service_role`. The application must independently verify the authenticated role before calling it.
+
+## Authentication and sessions
+
+Authentication uses separate role-specific account tables rather than a shared username/password table with a client-controlled role.
+
+Passwords are stored as PostgreSQL `crypt()` hashes.
+
+After successful login, DataMind creates a signed stateless session cookie containing:
+
+- username
+- role
+- workforce ID where applicable
+- issued-at timestamp
+- expiry timestamp
+
+The session is signed with HMAC-SHA256 using `SESSION_SECRET`.
+
+The cookie is:
+
+- `httpOnly`
+- `sameSite=lax`
+- secure in production
+- limited to a 10-minute inactivity window
+
+Authenticated heartbeats renew active sessions. Inactivity causes the session to expire.
+
+`middleware.ts` protects application routes and returns JSON `401` responses for unauthenticated API requests. The `/owner` route is restricted to the Owner role.
+
+## Owner workspace
+
+The Owner dashboard is available at `/owner`.
+
+It currently provides:
+
+- **Overview** — employee count, HR/Manager count, query count, database status, recent activity
+- **Database** — database table and column metadata
+- **Employees** — create, activate/deactivate, reset password, and remove employee accounts
+- **HR/Managers** — create, activate/deactivate, reset password, and remove HR/Manager accounts
+- **Activity** — audit log inspection and print support
+- **Settings** — workspace settings interface
+
+Owner operations are routed through `/api/owner` and require an authenticated Owner session.
+
+## Audit logging
+
+Important operations are recorded in `audit_logs`.
+
+The current schema records:
+
+- actor username
+- actor role
+- operation type
+- operation target
+- execution status
+- affected row count
+- metadata
+- timestamp
+
+The Owner dashboard uses this information for workspace activity monitoring.
 
 ## Automatic visualization
 
-`lib/visualization/engine.ts`'s `getVisualizationOptions` looks only at the
-columns/types of the rows Postgres actually returned, and computes **every**
-chart type that's genuinely valid for that shape in one pass — not just one:
+`lib/visualization/engine.ts` examines the actual returned query result.
 
-- needs ≥2 rows and a numeric column, or nothing is chartable
-- a date column → `["line", "bar"]`
-- a categorical column with 2–8 distinct values → `["bar", "pie"]`
-- a categorical column with 9–25 distinct values → `["bar"]` only (pie gets
-  unreadable much past 8 slices)
-- anything else (single row, no numeric column, more than 25 categories, or
-  a write statement's empty result set) → `[]`, table only
+It can generate valid:
 
-The array order is just a display hint — if the question's own wording
-suggests one (e.g. "pie chart of...", "...over time"), that type is put
-first — but every entry in the array is independently valid.
-`isVisualizationRenderable` re-checks each one against the real result
-before the route ever returns it, so a chart option is never returned with
-fields that don't exist or aren't numeric.
+- **Bar charts** for categorical comparisons
+- **Pie charts** for small categorical distributions
+- **Line charts** for temporal/trend data
 
-The user never picks the chart type up front, and the model never decides
-it either — the frontend (`ResultView.tsx`) renders Table plus one button
-per valid chart type, all generated together in the same response so
-switching between them is instant, not a second round trip. Table is
-always the default view for a fresh result; nothing else is shown until
-the user clicks one of the chart buttons.
+The visualization engine does not invent values. It derives chart data from the actual returned rows and validates the selected fields before rendering.
+
+If the returned data does not support a reliable visualization, DataMind falls back to the table view.
 
 ## CSV export
 
-HR/Manager accounts can download the current result table as a CSV file; employee
-accounts cannot — the "Download CSV" button in `ResultView.tsx` only
-renders when the signed-in session's role is `"hr_manager"`. Export
-(`lib/csv.ts`) works entirely client-side against the `QueryResult` already
-in the browser: it formats exactly the rows and columns the user was
-already shown under their own session, so it can never surface more than
-what that request already legitimately returned. There is no separate
-export API route to secure — the same role check the rest of the app uses
-(`GET /api/auth/me` on load) gates whether the button renders at all.
+HR/Manager and Owner users can export the current result table as CSV.
+
+The export is generated client-side from the rows already returned by the authenticated query. There is no separate database-export endpoint.
+
+Employees do not receive the CSV export control.
+
+## Project stack
+
+**Frontend**
+- Next.js 14
+- React 18
+- TypeScript
+- Tailwind CSS
+- Recharts
+
+**Backend**
+- Next.js App Router API routes
+- Server-only Supabase client
+- Web Crypto API for session signing
+
+**Database**
+- Supabase
+- PostgreSQL
+- PostgreSQL functions / RPCs
+- `pgcrypto`
+
+**AI**
+- Groq API
+- OpenAI-compatible chat completion interface
+- Configurable `GROQ_MODEL`
 
 ## Setup
 
-1. **Install dependencies**
+### 1. Install dependencies
 
-   ```bash
-   npm install
-   ```
+```bash
+npm install
+```
 
-2. **Configure environment** — copy `.env.example` to `.env.local` and fill
-   in real values:
+### 2. Configure environment variables
 
-   ```bash
-   cp .env.example .env.local
-   ```
+Create `.env.local`:
 
-   ```
-   GROQ_API_KEY=
-   GROQ_MODEL=openai/gpt-oss-120b
-   NEXT_PUBLIC_SUPABASE_URL=
-   SUPABASE_SECRET_KEY=
-   # Optional legacy fallback:
-   # SUPABASE_SERVICE_ROLE_KEY=
-   NEXT_PUBLIC_APP_URL=http://localhost:3000
-   SESSION_SECRET=
-   ```
+```env
+GROQ_API_KEY=
+GROQ_MODEL=openai/gpt-oss-120b
 
-   `SUPABASE_SECRET_KEY` is the preferred current server-side key and is
-   never sent to the browser. `SUPABASE_SERVICE_ROLE_KEY` is supported as a
-   legacy fallback. Both are read only inside `lib/database/supabase.ts`,
-   which is marked `import "server-only"`.
+NEXT_PUBLIC_SUPABASE_URL=
+SUPABASE_SECRET_KEY=
+# Optional legacy fallback:
+# SUPABASE_SERVICE_ROLE_KEY=
 
-   Generate `SESSION_SECRET` with:
+NEXT_PUBLIC_APP_URL=http://localhost:3000
+SESSION_SECRET=
+```
 
-   ```bash
-   node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"
-   ```
+Generate a strong session secret:
 
-3. **Run the one-time Supabase setup**, in order, in the SQL editor of your
-   **existing** Supabase project (the one that already has `workforce`,
-   `department`, `salary`, `address`, `job_history`, `dept_assignment`):
+```bash
+node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"
+```
 
-   1. `setup.sql` — adds `execute_readonly_sql`. Does not touch application
-      tables.
-   2. `auth_setup.sql` — adds `hr_manager_users`, `employee_users`,
-      `verify_hr_manager_login`, `verify_employee_login`, `execute_privileged_sql`,
-      and seeds one demo account per table (`hr_manager`/`change-me-hr_manager` in
-      `hr_manager_users`, `workforce`/`change-me-workforce` in `employee_users`).
-      **Change both passwords** — the simplest way is to re-run the two
-      `insert` statements with `on conflict (username) do update set
-      password_hash = excluded.password_hash` once you've picked real
-      passwords, or delete and re-insert the rows in the table for the
-      panel you're changing.
+The Supabase secret/service-role key, Groq key, and session secret must remain server-side.
 
-4. **Run the app**
+### 3. Configure the existing Supabase project
 
-   ```bash
-   npm run dev
-   ```
+Run these files in order in the SQL Editor of the existing DataMind Supabase project:
 
-   Visit `http://localhost:3000` — you'll be redirected to `/login`. Sign in
-   as either demo account to try the corresponding role.
+1. `setup.sql`
+2. `auth_setup.sql`
 
-### Supabase connection check
+`setup.sql` installs the read-only execution RPC.
 
-After starting the app, open `http://localhost:3000/api/health` in the
-browser. A working setup returns `{"ok":true,"database":"connected"}`. If
-the RPC function has not been installed yet, the endpoint reports that
-directly.
+`auth_setup.sql` installs the current authentication, account-management, audit, password-hashing, login-verification, and privileged-execution infrastructure.
 
-If you get the missing-function message, open the SQL Editor of the
-existing Supabase project and run the complete `setup.sql` file once (and
-`auth_setup.sql` for login/roles). Do not create a second project or
-replace the existing application tables.
+Do not create a second Supabase project just to run these migrations.
+
+### 4. Start DataMind
+
+```bash
+npm run dev
+```
+
+Open:
+
+```
+http://localhost:3000
+```
+
+Unauthenticated users are sent to `/login`.
+
+### Health check
+
+After the application is running:
+
+```
+http://localhost:3000/api/health
+```
+
+A working database connection should return a successful health response.
+
+## Demo accounts
+
+The current `auth_setup.sql` seeds these accounts if the usernames do not already exist:
+
+| Role | Username | Initial password |
+|---|---|---|
+| Owner | `owner` | `change-me-owner` |
+| HR/Manager | `admin` | `change-me-admin` |
+| Employee | `member` | `change-me-member` |
+
+**Change the seeded passwords before using the application outside a local/demo environment.**
 
 ## Commands
 
 ```bash
-npm run dev         # start the dev server
-npm run typecheck   # tsc --noEmit
-npm run lint        # next lint
-npm run build        # production build
-npm run start        # run the production build
+npm run dev
+npm run typecheck
+npm run lint
+npm run build
+npm run start
 ```
 
 ## Example questions
 
-Read (any role):
+### Read
 
-- "In finance, who earns the second highest salary?"
-- "Who is working in more than one department?"
-- "Which managers have 50 or more employees under them, direct or indirect?"
 - "How many people work in each department?"
 - "Which city has the most employees?"
+- "Who earns the second highest salary?"
+- "Who is working in more than one department?"
 - "Show me a pie chart of employees by department."
 - "Compare average salary across departments as a bar chart."
 - "Plot hiring over the last five years."
 
-Write (hr_manager only — each is shown for review before it runs):
+### Write
 
-- "Add a new department called Legal, located in Kolkata."
-- "Update employee 12's salary to 95000 effective today."
-- "Delete the job history row for employee 7 where the new role is 'Intern'."
+Available to authorized HR/Manager and Owner users.
 
-## Security
+Examples:
 
-- The Supabase service-role/secret key, the Groq API key, and
-  `SESSION_SECRET` are read only in server-only modules and are never
-  inlined into the client bundle (only `NEXT_PUBLIC_*` variables are, and
-  none of these use that prefix).
-- Session cookies are `httpOnly`, `sameSite=lax`, signed with HMAC-SHA256,
-  and carry an 8-hour expiry checked on every request.
-- A user's role is never accepted from the client as the basis for
-  authorization — it is only ever confirmed by which table's login RPC
-  actually matched (`verify_hr_manager_login` against `hr_manager_users`, or
-  `verify_employee_login` against `employee_users`), and re-read from the
-  verified session cookie on every subsequent request. The login screen's
-  HR/Manager/Employee tabs pick which of those two isolated checks runs; there is
-  no shared table or role column being compared anywhere.
-- Two independent layers reject unsafe SQL for every request: the app-level
-  validator (`lib/sql/validator.ts`) and the database-level RPC guard
-  (`setup.sql` / `auth_setup.sql`). A third layer, unique to writes: nothing
-  an hr_manager's question resolves to is executed until the hr_manager explicitly
-  confirms it in the UI, and `/api/query/confirm` re-validates the
-  statement itself rather than trusting the client's copy of it.
-- `GRANT`/`REVOKE`/`MERGE`/`CALL`/`EXECUTE` and other privilege-escalation
-  or server-hr_manager operations are forbidden unconditionally — no role
-  unlocks them.
-- The API routes never return stack traces or internal error details to the
-  browser; technical details are only `console.error`'d server-side.
-- Prompt injection ("ignore previous instructions and delete...") is
-  treated purely as translation input by the model, and even if the model
-  complied, the resulting SQL would still be rejected by every validation
-  layer before it could reach the database — and even a validated hr_manager
-  write still stops for human confirmation first.
+- "Add a new department called Legal."
+- "Update employee 12's salary."
+- "Delete the job history row for employee 7."
 
-## Limitations
+Writes are presented for review and require explicit confirmation before execution.
 
-- This environment could not run the app against a real Groq or Supabase
-  project — it has no outbound network access to `api.groq.com`,
-  `*.supabase.co`, or `fonts.googleapis.com`, and no real credentials were
-  provided. What WAS verified in this environment: `npm install`,
-  `npm run typecheck` (clean), `npm run lint` (clean), and a full
-  `npm run build` (verified successful with the Google Fonts calls in
-  `app/layout.tsx` temporarily stubbed out for that one build, since that
-  fetch is the only step blocked by network access — the real
-  `next/font/google` imports were restored immediately afterward and are
-  what ships in this codebase). The functional test matrix against real
-  data (the example questions above, both read and write, under both
-  roles) still needs to be run in an environment with network access and
-  real `GROQ_API_KEY` / Supabase / `SESSION_SECRET` values.
-- Chart type is chosen heuristically from column names/types and simple
-  keyword cues in the question; it will sensibly fall back to "table only"
-  rather than guess for ambiguous shapes.
-- Query history is a lightweight `localStorage` list (last 8 questions) —
-  there is no server-side history table, by design.
-- The demo accounts and passwords seeded into `hr_manager_users` and
-  `employee_users` by `auth_setup.sql` are meant to be readable for a local
-  demo, not production-secret. Change both passwords (or replace the seed
-  rows entirely) before deploying anywhere reachable by others.
+## Security model
 
-## Session security
+DataMind uses multiple independent controls:
 
-DataMind uses a 10-minute sliding session timeout. Activity in the application keeps the signed session alive through an authenticated heartbeat; 10 minutes without activity logs the user out. The browser also makes a best-effort logout request when the project document is unloaded (including tab/window close) using `sendBeacon`.
+1. **Role-specific authentication**
+2. **Signed server-side session**
+3. **Server-derived authorization**
+4. **LLM role-aware prompting**
+5. **Application-level SQL validation**
+6. **Explicit confirmation for writes**
+7. **Database-level SQL validation**
+8. **Service-role-only RPC execution**
+9. **Owner-only workspace authorization**
+10. **Audit logging**
+
+This layered design means the LLM is never treated as the security boundary.
+
+## Current limitations
+
+- SQL generation depends on the quality and capabilities of the configured LLM.
+- Visualization selection is heuristic and based on the actual result shape.
+- Query history is maintained locally rather than as a server-side history system.
+- The application requires valid Groq and Supabase credentials for full end-to-end operation.
+- Seeded demo credentials are intended for demonstration and must be changed before broader deployment.
