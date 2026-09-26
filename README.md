@@ -1,63 +1,228 @@
 # DataMind
 
-**Ask your database in plain English.**
+**A natural-language database interface with role-based authorization, SQL validation, and database-driven visualization.**
 
-DataMind turns natural-language questions into PostgreSQL queries, validates them independently, executes them against a real Supabase PostgreSQL database, and presents the returned data with SQL and supported visualizations.
+## Live Deployment
 
-The database is the source of truth. The LLM translates the question into SQL; it does not invent database results.
+**Live Application:** https://datamind-bydataspeak.onrender.com/
 
-## What DataMind provides
+DataMind is deployed and available online. The live application provides the complete user-facing experience, including authentication, natural-language database queries, SQL generation, server-side validation, Supabase PostgreSQL execution, result visualization, role-based access control, and the Owner workspace.
 
-- Natural-language database querying
-- Role-aware SQL generation
-- Independent server-side SQL validation
-- Real-time execution against Supabase PostgreSQL
-- Explicit confirmation before privileged writes
-- Automatic bar, line, and pie visualization when the returned data supports it
-- SQL inspection and result-table views
-- Role-based CSV export for HR/Manager users
-- Owner workspace for account management, database inspection, and audit activity
-- Signed server-side sessions with inactivity expiry
-- Audit logging for important database and account operations
+**Live Application:** [https://datamind-bydataspeak.onrender.com/](https://datamind-bydataspeak.onrender.com/)
 
-## Roles and authorization
+**Source Repository:** [https://github.com/RevvedupSoham/DATAMIND_byDATASPEAK](https://github.com/RevvedupSoham/DATAMIND_byDATASPEAK)
 
-DataMind currently has three application roles:
+## Overview
 
-| Role | Database access | Write access | Owner workspace | CSV export |
+DataMind allows users to interact with a PostgreSQL employee database using natural language instead of writing SQL manually.
+
+A user submits a question, the configured LLM translates it into SQL, the application independently validates the generated statement, and the approved query is executed against the real Supabase PostgreSQL database. Returned data is presented through a result table and, where appropriate, automatically generated visualizations.
+
+The database remains the source of truth. The LLM is used for SQL generation and is not treated as a security or data-generation layer.
+
+## Application Roles
+
+DataMind currently supports three application roles:
+
+| Role | Database Access | Write Access | Owner Workspace | CSV Export |
 |---|---|---|---|---|
-| **Owner** | Read + privileged operations | Yes | Yes | Yes |
-| **HR/Manager** | Read + approved writes | Yes | No | Yes |
+| **Owner** | Read and privileged operations | Yes | Yes | Yes |
+| **HR/Manager** | Read and approved writes | Yes | No | Yes |
 | **Employee** | Read-only | No | No | No |
 
-Authorization is derived from the verified server-side session. The client cannot choose a role to obtain additional privileges.
+Authorization is derived from the verified server-side session. A client request cannot select a role to obtain additional privileges.
 
-### Authorization flow
+## Live Application Flow
 
 ```
 Login
-  ↓
+  |
+  v
 Role-specific credential verification
-  ↓
-Signed session cookie
-  ↓
-Server verifies session + role
-  ↓
-Role-aware SQL generation
-  ↓
+  |
+  v
+Signed server-side session
+  |
+  v
+Natural-language database question
+  |
+  v
+Groq LLM
+  |
+  v
+Generated PostgreSQL statement
+  |
+  v
 Independent SQL validation
-  ↓
-Read → execute immediately
-Write → show SQL → explicit confirmation
-  ↓
-Supabase PostgreSQL
-  ↓
-Real rows → table / supported chart
+  |
+  +----------------------------+
+  |                            |
+  v                            v
+Read operation             Write operation
+  |                            |
+  v                            v
+Read-only RPC             Explicit confirmation
+  |                            |
+  |                            v
+  |                       Privileged RPC
+  |                            |
+  +-------------+--------------+
+                |
+                v
+        Supabase PostgreSQL
+                |
+                v
+       Result table and charts
 ```
 
-For owner operations, the flow is additionally protected by an owner-only route check and server-side role verification.
+Owner operations use an additional Owner-only route and server-side role check.
 
-## Core architecture
+## Core Features
+
+### Natural-Language to SQL
+
+DataMind converts ordinary-language questions into PostgreSQL queries using the Groq API and the configured `GROQ_MODEL`.
+
+The model returns structured output containing the generated SQL and an explanation. The generated SQL is independently validated before execution.
+
+### Role-Based Authorization
+
+Authentication uses separate role-specific account tables:
+
+- `owner_users`
+- `hr_manager_users`
+- `employee_users`
+
+The authenticated role is stored in a signed server-side session and is used to determine which operations the user is permitted to perform.
+
+### SQL Validation
+
+Generated SQL passes through an independent application-level validator.
+
+The validation layer checks:
+
+- Statement type
+- Query length
+- Multiple statements
+- Dangerous PostgreSQL functions
+- Privilege and administrative operations
+- Role-specific write permissions
+- Unrestricted `UPDATE` and `DELETE` operations
+- Access to protected DataMind system tables
+- Suspicious SQL comments and control sequences
+
+Write operations are returned for review and require explicit confirmation before execution.
+
+### Database Execution
+
+DataMind uses Supabase PostgreSQL as its database layer.
+
+Read operations use a dedicated read-only RPC. Privileged operations use a separate database RPC that applies its own restrictions. These functions are available only to the server-side service role.
+
+### Automatic Visualization
+
+The visualization engine examines the actual rows returned by PostgreSQL and determines whether the result supports a chart.
+
+Supported visualizations include:
+
+- Bar charts
+- Line charts
+- Pie charts
+
+If the returned data does not support a reliable visualization, DataMind falls back to the table view.
+
+### CSV Export
+
+HR/Manager and Owner users can export the currently displayed query result as CSV. The export is generated client-side from data already returned to the authenticated session.
+
+Employees do not receive the CSV export control.
+
+## Owner Workspace
+
+The Owner workspace is available at:
+
+```
+/owner
+```
+
+It provides:
+
+- Overview of employees, HR/Managers, queries, database status, and recent activity
+- Database table and column information
+- Employee account management
+- HR/Manager account management
+- Password reset and account status operations
+- Audit activity inspection
+- Workspace settings
+
+Owner operations are handled through `/api/owner` and require an authenticated Owner session.
+
+## Audit Logging
+
+Important application and database operations are recorded in `audit_logs`.
+
+Recorded information includes:
+
+- Actor username
+- Actor role
+- Operation type
+- Operation target
+- Execution status
+- Affected row count
+- Metadata
+- Timestamp
+
+The Owner workspace uses these records for activity monitoring.
+
+## Security Architecture
+
+DataMind uses multiple independent layers of protection:
+
+1. Role-specific authentication
+2. Signed server-side sessions
+3. Server-derived authorization
+4. Role-aware LLM prompting
+5. Independent application-level SQL validation
+6. Explicit confirmation for write operations
+7. Database-level SQL validation
+8. Service-role-only RPC execution
+9. Owner-only workspace authorization
+10. Audit logging
+
+The LLM is therefore treated as a translation component rather than the security boundary.
+
+Session cookies are signed using HMAC-SHA256 and configured as `httpOnly`, `sameSite=lax`, and secure in production. Sessions also use inactivity expiry and authenticated heartbeats.
+
+## Technology Stack
+
+**Frontend**
+- Next.js 14
+- React 18
+- TypeScript
+- Tailwind CSS
+- Recharts
+
+**Backend**
+- Next.js App Router API routes
+- Server-only Supabase client
+- Web Crypto API
+
+**Database**
+- Supabase
+- PostgreSQL
+- PostgreSQL functions and RPCs
+- pgcrypto
+
+**AI**
+- Groq API
+- OpenAI-compatible chat completion interface
+- Configurable `GROQ_MODEL`
+- Intended model: `openai/gpt-oss-120b`
+
+**Deployment**
+- Render
+
+## Project Structure
 
 ```
 app/
@@ -79,16 +244,11 @@ app/
 
 components/
   Navigation.tsx
-  Hero.tsx
-  HowItWorks.tsx
   QueryInterface.tsx
-  SuggestedQuestions.tsx
-  SQLViewer.tsx
   ResultView.tsx
   ResultTable.tsx
   ChartRenderer.tsx
-  Examples.tsx
-  VisualizationSection.tsx
+  SQLViewer.tsx
   SessionGuard.tsx
   ThemeToggle.tsx
 
@@ -100,13 +260,8 @@ lib/
   sql/validator.ts
   visualization/engine.ts
   csv.ts
-  ask-bridge.ts
 
 types/
-  auth.ts
-  database.ts
-  query.ts
-  visualization.ts
 
 middleware.ts
 setup.sql
@@ -114,204 +269,15 @@ auth_setup.sql
 managing-accounts.md
 ```
 
-## Natural language → SQL
+## Local Development
 
-The LLM is accessed through Groq using the configured `GROQ_MODEL`, currently intended for `openai/gpt-oss-120b`.
-
-The verified database schema is supplied by `lib/sql/schema.ts`. The application uses role-aware prompting so that the generated SQL reflects the authenticated user's permissions.
-
-The model is instructed to return structured JSON containing:
-
-```json
-{
-  "sql": "...",
-  "explanation": "..."
-}
-```
-
-The generated SQL is not trusted. It passes through the independent application validator before execution.
-
-## SQL validation
-
-`lib/sql/validator.ts` is the application's primary SQL safety boundary.
-
-Validation includes:
-
-- statement-type checks
-- maximum query length
-- multiple-statement detection
-- dangerous PostgreSQL function detection
-- forbidden administrative/privilege operations
-- role-aware write restrictions
-- protection against unrestricted `UPDATE`/`DELETE`
-- restrictions on DataMind system tables for non-owner roles
-- additional checks for SQL comments and suspicious control sequences
-
-The authenticated role is taken from the verified session, not from the request body.
-
-### Read requests
-
-Employee, HR/Manager, and Owner read requests are validated before being sent to the read-only database RPC.
-
-### Write requests
-
-HR/Manager and Owner write requests do not execute immediately from the initial query route.
-
-The generated SQL is returned as a pending operation. The user reviews it and explicitly chooses **Confirm & Run**. The confirmation route validates the SQL again and only then calls the privileged database RPC.
-
-## Database-level defense in depth
-
-DataMind does not rely solely on application code.
-
-### `setup.sql`
-
-Creates:
-
-`execute_readonly_sql(query text)`
-
-This function:
-
-- accepts only `SELECT`/ `WITH` statements
-- rejects multiple statements
-- applies an 8-second statement timeout
-- is callable only by `service_role`
-
-### `auth_setup.sql`
-
-Creates the authentication/account tables:
-
-- `owner_users`
-- `hr_manager_users`
-- `employee_users`
-- `audit_logs`
-
-It also creates:
-
-- `hash_datamind_password()`
-- `verify_owner_login()`
-- `verify_hr_manager_login()`
-- `verify_employee_login()`
-- `execute_privileged_sql()`
-
-Account tables and management functions are restricted from browser roles.
-
-The privileged SQL RPC applies its own statement-type and dangerous-operation checks and is granted only to `service_role`. The application must independently verify the authenticated role before calling it.
-
-## Authentication and sessions
-
-Authentication uses separate role-specific account tables rather than a shared username/password table with a client-controlled role.
-
-Passwords are stored as PostgreSQL `crypt()` hashes.
-
-After successful login, DataMind creates a signed stateless session cookie containing:
-
-- username
-- role
-- workforce ID where applicable
-- issued-at timestamp
-- expiry timestamp
-
-The session is signed with HMAC-SHA256 using `SESSION_SECRET`.
-
-The cookie is:
-
-- `httpOnly`
-- `sameSite=lax`
-- secure in production
-- limited to a 10-minute inactivity window
-
-Authenticated heartbeats renew active sessions. Inactivity causes the session to expire.
-
-`middleware.ts` protects application routes and returns JSON `401` responses for unauthenticated API requests. The `/owner` route is restricted to the Owner role.
-
-## Owner workspace
-
-The Owner dashboard is available at `/owner`.
-
-It currently provides:
-
-- **Overview** — employee count, HR/Manager count, query count, database status, recent activity
-- **Database** — database table and column metadata
-- **Employees** — create, activate/deactivate, reset password, and remove employee accounts
-- **HR/Managers** — create, activate/deactivate, reset password, and remove HR/Manager accounts
-- **Activity** — audit log inspection and print support
-- **Settings** — workspace settings interface
-
-Owner operations are routed through `/api/owner` and require an authenticated Owner session.
-
-## Audit logging
-
-Important operations are recorded in `audit_logs`.
-
-The current schema records:
-
-- actor username
-- actor role
-- operation type
-- operation target
-- execution status
-- affected row count
-- metadata
-- timestamp
-
-The Owner dashboard uses this information for workspace activity monitoring.
-
-## Automatic visualization
-
-`lib/visualization/engine.ts` examines the actual returned query result.
-
-It can generate valid:
-
-- **Bar charts** for categorical comparisons
-- **Pie charts** for small categorical distributions
-- **Line charts** for temporal/trend data
-
-The visualization engine does not invent values. It derives chart data from the actual returned rows and validates the selected fields before rendering.
-
-If the returned data does not support a reliable visualization, DataMind falls back to the table view.
-
-## CSV export
-
-HR/Manager and Owner users can export the current result table as CSV.
-
-The export is generated client-side from the rows already returned by the authenticated query. There is no separate database-export endpoint.
-
-Employees do not receive the CSV export control.
-
-## Project stack
-
-**Frontend**
-- Next.js 14
-- React 18
-- TypeScript
-- Tailwind CSS
-- Recharts
-
-**Backend**
-- Next.js App Router API routes
-- Server-only Supabase client
-- Web Crypto API for session signing
-
-**Database**
-- Supabase
-- PostgreSQL
-- PostgreSQL functions / RPCs
-- `pgcrypto`
-
-**AI**
-- Groq API
-- OpenAI-compatible chat completion interface
-- Configurable `GROQ_MODEL`
-
-## Setup
-
-### 1. Install dependencies
+### 1. Install Dependencies
 
 ```bash
 npm install
 ```
 
-### 2. Configure environment variables
+### 2. Configure Environment Variables
 
 Create `.env.local`:
 
@@ -321,35 +287,29 @@ GROQ_MODEL=openai/gpt-oss-120b
 
 NEXT_PUBLIC_SUPABASE_URL=
 SUPABASE_SECRET_KEY=
-# Optional legacy fallback:
-# SUPABASE_SERVICE_ROLE_KEY=
 
 NEXT_PUBLIC_APP_URL=http://localhost:3000
 SESSION_SECRET=
 ```
 
-Generate a strong session secret:
+The Supabase server key, Groq API key, and session secret must remain server-side.
+
+Generate a session secret with:
 
 ```bash
 node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"
 ```
 
-The Supabase secret/service-role key, Groq key, and session secret must remain server-side.
+### 3. Configure Supabase
 
-### 3. Configure the existing Supabase project
-
-Run these files in order in the SQL Editor of the existing DataMind Supabase project:
+Run the following files in order in the existing DataMind Supabase project:
 
 1. `setup.sql`
 2. `auth_setup.sql`
 
-`setup.sql` installs the read-only execution RPC.
+These files configure the database execution RPCs, authentication tables, account-management functions, password hashing, login verification, privileged execution, and audit infrastructure.
 
-`auth_setup.sql` installs the current authentication, account-management, audit, password-hashing, login-verification, and privileged-execution infrastructure.
-
-Do not create a second Supabase project just to run these migrations.
-
-### 4. Start DataMind
+### 4. Start the Application
 
 ```bash
 npm run dev
@@ -361,29 +321,29 @@ Open:
 http://localhost:3000
 ```
 
-Unauthenticated users are sent to `/login`.
+Unauthenticated users are redirected to `/login`.
 
-### Health check
+### Health Check
 
-After the application is running:
+Once the application is running:
 
 ```
 http://localhost:3000/api/health
 ```
 
-A working database connection should return a successful health response.
+The endpoint can be used to verify application and database connectivity.
 
-## Demo accounts
+## Demo Accounts
 
-The current `auth_setup.sql` seeds these accounts if the usernames do not already exist:
+The current `auth_setup.sql` seeds the following accounts if the usernames do not already exist:
 
-| Role | Username | Initial password |
+| Role | Username | Initial Password |
 |---|---|---|
 | Owner | `owner` | `change-me-owner` |
 | HR/Manager | `admin` | `change-me-admin` |
 | Employee | `member` | `change-me-member` |
 
-**Change the seeded passwords before using the application outside a local/demo environment.**
+Change the seeded passwords before using the application outside a local or controlled demonstration environment.
 
 ## Commands
 
@@ -395,7 +355,7 @@ npm run build
 npm run start
 ```
 
-## Example questions
+## Example Queries
 
 ### Read
 
@@ -409,7 +369,7 @@ npm run start
 
 ### Write
 
-Available to authorized HR/Manager and Owner users.
+Authorized HR/Manager and Owner users can submit supported database modification requests.
 
 Examples:
 
@@ -417,29 +377,42 @@ Examples:
 - "Update employee 12's salary."
 - "Delete the job history row for employee 7."
 
-Writes are presented for review and require explicit confirmation before execution.
+Write requests are presented for review and require explicit confirmation before execution.
 
-## Security model
+## Database Defense in Depth
 
-DataMind uses multiple independent controls:
+### Read-only RPC
 
-1. **Role-specific authentication**
-2. **Signed server-side session**
-3. **Server-derived authorization**
-4. **LLM role-aware prompting**
-5. **Application-level SQL validation**
-6. **Explicit confirmation for writes**
-7. **Database-level SQL validation**
-8. **Service-role-only RPC execution**
-9. **Owner-only workspace authorization**
-10. **Audit logging**
+`setup.sql` creates:
 
-This layered design means the LLM is never treated as the security boundary.
+```
+execute_readonly_sql(query text)
+```
 
-## Current limitations
+The function accepts only read operations, rejects multiple statements, applies an 8-second statement timeout, and is callable only by `service_role`.
 
-- SQL generation depends on the quality and capabilities of the configured LLM.
-- Visualization selection is heuristic and based on the actual result shape.
-- Query history is maintained locally rather than as a server-side history system.
-- The application requires valid Groq and Supabase credentials for full end-to-end operation.
-- Seeded demo credentials are intended for demonstration and must be changed before broader deployment.
+### Privileged RPC
+
+`auth_setup.sql` creates:
+
+```
+execute_privileged_sql()
+```
+
+The privileged function applies its own statement-type and dangerous-operation checks and is restricted to `service_role`.
+
+The application independently verifies the authenticated role before calling the privileged RPC.
+
+## Repository
+
+**GitHub:** https://github.com/RevvedupSoham/DATAMIND_byDATASPEAK
+
+The repository contains the application source code, database setup scripts, authentication and authorization logic, SQL validation layer, visualization engine, account-management functionality, and deployment configuration.
+
+## Deployment Notes
+
+The live deployment is intended to provide a publicly accessible demonstration of DataMind.
+
+The application requires valid server-side Groq and Supabase credentials. Sensitive credentials are not stored in the repository or exposed to the browser.
+
+For deployments accessible to external users, seeded demonstration passwords should be replaced with appropriate credentials and the database should be configured for the intended access scope.
