@@ -4,8 +4,6 @@
 
 ## Live Deployment
 
-**Live Application:** https://datamind-bydataspeak.onrender.com/
-
 DataMind is deployed and available online. The live application provides the complete user-facing experience, including authentication, natural-language database queries, SQL generation, server-side validation, Supabase PostgreSQL execution, result visualization, role-based access control, and the Owner workspace.
 
 **Live Application:** [https://datamind-bydataspeak.onrender.com/](https://datamind-bydataspeak.onrender.com/)
